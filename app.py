@@ -8,14 +8,10 @@ from mediapipe.tasks.python import vision
 from PIL import Image
 import time
 from collections import Counter
-<<<<<<< HEAD
 from collections import defaultdict
-
-=======
 import nltk
 from nltk.corpus import words, brown
 from nltk import bigrams
-from collections import defaultdict
 
 # Download required NLTK data
 try:
@@ -24,7 +20,6 @@ try:
 except LookupError:
     nltk.download('words')
     nltk.download('brown')
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
 # Page config
 st.set_page_config(
@@ -147,11 +142,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-<<<<<<< HEAD
-import asl_utils
-
-=======
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 # Load model
 @st.cache_resource
 def load_model():
@@ -160,8 +150,6 @@ def load_model():
 
 model = load_model()
 
-<<<<<<< HEAD
-=======
 # Build language model
 @st.cache_resource
 def build_language_model():
@@ -199,7 +187,42 @@ def get_next_word_suggestions(last_word, max_suggestions=3):
     
     return []
 
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
+# ASL reference descriptions (built-in, no external dependency)
+ASL_DESCRIPTIONS = {
+    'A': 'Make a fist with your dominant hand, thumb resting on the side.',
+    'B': 'Hold your fingers straight up and together, thumb tucked across palm.',
+    'C': 'Curve your fingers and thumb into a C shape.',
+    'D': 'Point index finger up, remaining fingers touch thumb forming a circle.',
+    'E': 'Curl all fingers down, thumb tucked under fingers.',
+    'F': 'Connect index finger and thumb in a circle, other fingers extended.',
+    'G': 'Point index finger sideways, thumb parallel pointing out.',
+    'H': 'Point index and middle fingers sideways together.',
+    'I': 'Raise pinky finger, other fingers curled into fist.',
+    'J': 'Raise pinky and draw a J shape in the air.',
+    'K': 'Index and middle fingers up in a V, thumb between them.',
+    'L': 'Make an L shape with index finger up and thumb out.',
+    'M': 'Tuck three fingers over thumb.',
+    'N': 'Tuck two fingers over thumb.',
+    'O': 'Curve all fingers to meet thumb, forming an O shape.',
+    'P': 'Like K but pointed downward.',
+    'Q': 'Like G but pointed downward.',
+    'R': 'Cross middle finger over index finger.',
+    'S': 'Make a fist with thumb over fingers.',
+    'T': 'Make a fist with thumb between index and middle fingers.',
+    'U': 'Hold index and middle fingers straight up together.',
+    'V': 'Hold index and middle fingers up in a V (peace sign).',
+    'W': 'Hold index, middle, and ring fingers up spread apart.',
+    'X': 'Hook index finger into a curved/bent position.',
+    'Y': 'Extend thumb and pinky, curl other fingers (hang loose).',
+    'Z': 'Draw a Z in the air with your index finger.',
+}
+
+def get_asl_description(letter):
+    return ASL_DESCRIPTIONS.get(letter.upper(), "No description available.")
+
+def get_asl_image_url(letter):
+    return f"https://www.handspeak.com/word/search/img/asl-alphabet/{letter.lower()}.jpg"
+
 # MediaPipe setup
 BaseOptions = python.BaseOptions
 HandLandmarker = vision.HandLandmarker
@@ -230,12 +253,8 @@ if 'edit_mode' not in st.session_state:
 st.markdown("<h1>🤟 Real-Time Sign Language Translator</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Layout
-<<<<<<< HEAD
+# Layout: 3 columns
 col1, col2, col3 = st.columns([3, 2, 2])
-=======
-col1, col2 = st.columns([2, 1])
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
 with col1:
     st.subheader("📹 Live Camera Feed")
@@ -274,11 +293,7 @@ with col2:
     
     if ends_with_space and words_in_sentence:
         previous_word = words_in_sentence[-1]
-<<<<<<< HEAD
-        next_suggestions = asl_utils.get_next_word_suggestions(previous_word)
-=======
         next_suggestions = get_next_word_suggestions(previous_word)
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
         
         if next_suggestions:
             st.markdown("**Next word:**")
@@ -291,11 +306,7 @@ with col2:
     
     elif words_in_sentence and not ends_with_space:
         current_word = words_in_sentence[-1]
-<<<<<<< HEAD
-        word_sugs = asl_utils.get_word_suggestions(current_word)
-=======
         word_sugs = get_word_suggestions(current_word)
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
         
         if word_sugs:
             st.markdown("**Complete word:**")
@@ -343,17 +354,12 @@ with col2:
             else:
                 st.warning("⚠️ Nothing to save!")
 
-<<<<<<< HEAD
 with col3:
     st.subheader("📚 ASL Reference")
     ref_image_placeholder = st.empty()
     ref_text_placeholder = st.empty()
-    
-    # Default state if no letter detected
     ref_text_placeholder.info("Start signing to see reference details.")
 
-=======
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 # Camera processing
 if run:
     cap = cv2.VideoCapture(0)
@@ -440,27 +446,16 @@ if run:
             
             if current_letter:
                 current_letter_display.markdown(f"**Current Letter:** `{current_letter}`")
-<<<<<<< HEAD
-                
-                # Update Reference Panel
-                img_url = asl_utils.get_asl_image_url(current_letter)
-                desc = asl_utils.get_asl_description(current_letter)
-                
-                if img_url:
-                    ref_image_placeholder.image(img_url, caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
-                else:
-                    ref_image_placeholder.empty()
-                    
+
+                # Update ASL Reference Panel
+                desc = get_asl_description(current_letter)
+                img_url = get_asl_image_url(current_letter)
+                ref_image_placeholder.image(img_url, caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
                 ref_text_placeholder.markdown(f"**Description:**\n\n{desc}")
-                
             else:
                 current_letter_display.markdown(f"**Current Letter:** _None_")
                 ref_image_placeholder.empty()
                 ref_text_placeholder.info("Waiting for sign...")
-=======
-            else:
-                current_letter_display.markdown(f"**Current Letter:** _None_")
->>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
             
             FRAME_WINDOW.image(frame_rgb, use_container_width=True)
             
