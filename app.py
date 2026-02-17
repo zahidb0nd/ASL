@@ -86,22 +86,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Twilio TURN server config for mobile support
-def get_rtc_configuration():
-    try:
-        from twilio.rest import Client
-        account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
-        auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
-        client = Client(account_sid, auth_token)
-        token = client.tokens.create()
-        return RTCConfiguration({"iceServers": token.ice_servers})
-    except Exception:
-        # Fallback without Twilio
-        return RTCConfiguration({
-            "iceServers": [
-                {"urls": ["stun:stun.l.google.com:19302"]},
-            ]
-        })
+# RTC config (no Twilio)
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
+})
 
 # Load model
 @st.cache_resource
@@ -177,16 +165,17 @@ def get_asl_description(letter):
 def get_asl_image_url(letter):
     return f"https://www.handspeak.com/word/search/img/asl-alphabet/{letter.lower()}.jpg"
 
-# MediaPipe setup
-BaseOptions = python.BaseOptions
-HandLandmarker = vision.HandLandmarker
-HandLandmarkerOptions = vision.HandLandmarkerOptions
-VisionRunningMode = vision.RunningMode
-
+# MediaPipe labels
 labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H',
                8: 'I', 9: 'J', 10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P',
                16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W',
                23: 'X', 24: 'Y', 25: 'Z'}
+
+HAND_CONNECTIONS = [
+    (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
+    (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
+    (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
+]
 
 # Session state defaults
 for key, default in [
@@ -201,39 +190,50 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Video processor for webrtc
+
 class SignLanguageProcessor(VideoProcessorBase):
     def __init__(self):
         self.model = load_model()
-        self.options = HandLandmarkerOptions(
+
+        # ✅ Create HandLandmarker ONCE here, not every frame
+        BaseOptions = python.BaseOptions
+        HandLandmarkerOptions = vision.HandLandmarkerOptions
+        VisionRunningMode = vision.RunningMode
+
+        options = HandLandmarkerOptions(
             base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=VisionRunningMode.IMAGE
         )
+        self.landmarker = vision.HandLandmarker.create_from_options(options)
+
         self.prediction_buffer = []
         self.last_letter = ""
         self.last_letter_time = 0
         self.letter_cooldown = 0
         self.current_letter = ""
+        self.frame_count = 0
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
-        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-        with HandLandmarker.create_from_options(self.options) as landmarker:
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-            results = landmarker.detect(mp_image)
+        # ✅ Only process every 3rd frame to reduce CPU load
+        self.frame_count += 1
+        if self.frame_count % 3 != 0:
+            return av.VideoFrame.from_ndarray(
+                cv2.cvtColor(img, cv2.COLOR_BGR2RGB), format="rgb24"
+            )
+
+        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+
+        # ✅ Reuse the same landmarker instance
+        results = self.landmarker.detect(mp_image)
 
         current_time = time.time()
         current_letter = ""
 
         if results.hand_landmarks:
             for hand_landmarks in results.hand_landmarks:
-                HAND_CONNECTIONS = [
-                    (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
-                    (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
-                    (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
-                ]
-
                 landmark_points = []
                 for landmark in hand_landmarks:
                     x = int(landmark.x * img.shape[1])
@@ -241,8 +241,10 @@ class SignLanguageProcessor(VideoProcessorBase):
                     landmark_points.append((x, y))
 
                 for connection in HAND_CONNECTIONS:
-                    cv2.line(frame_rgb, landmark_points[connection[0]],
-                             landmark_points[connection[1]], (102, 126, 234), 3)
+                    cv2.line(frame_rgb,
+                             landmark_points[connection[0]],
+                             landmark_points[connection[1]],
+                             (102, 126, 234), 3)
 
                 for point in landmark_points:
                     cv2.circle(frame_rgb, point, 6, (118, 75, 162), -1)
@@ -262,10 +264,8 @@ class SignLanguageProcessor(VideoProcessorBase):
                 if len(self.prediction_buffer) > 10:
                     self.prediction_buffer.pop(0)
 
-                if len(self.prediction_buffer) >= 5:
-                    current_letter = Counter(self.prediction_buffer).most_common(1)[0][0]
-                else:
-                    current_letter = predicted_letter
+                current_letter = Counter(self.prediction_buffer).most_common(1)[0][0] \
+                    if len(self.prediction_buffer) >= 5 else predicted_letter
 
                 if current_letter == self.last_letter:
                     if current_time - self.last_letter_time > 1.0:
@@ -291,6 +291,7 @@ class SignLanguageProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
 
+
 # ---- UI ----
 st.markdown("<h1>🤟 Real-Time Sign Language Translator</h1>", unsafe_allow_html=True)
 st.markdown("---")
@@ -303,8 +304,9 @@ with col1:
     webrtc_streamer(
         key="sign-language",
         video_processor_factory=SignLanguageProcessor,
-        rtc_configuration=get_rtc_configuration(),
+        rtc_configuration=RTC_CONFIGURATION,
         media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
     )
 
 with col2:
@@ -354,7 +356,8 @@ with col2:
             for idx, sug in enumerate(word_sugs[:3]):
                 if st.button(f"📝 {sug.upper()}", key=f"word_{sug}_{idx}"):
                     completed = " ".join(words_in_sentence[:-1])
-                    st.session_state.sentence = list((completed + " " if completed else "") + sug.upper() + " ")
+                    st.session_state.sentence = list(
+                        (completed + " " if completed else "") + sug.upper() + " ")
                     st.rerun()
         else:
             st.info("✨ Keep signing...")
