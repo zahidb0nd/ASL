@@ -8,8 +8,23 @@ from mediapipe.tasks.python import vision
 from PIL import Image
 import time
 from collections import Counter
+<<<<<<< HEAD
 from collections import defaultdict
 
+=======
+import nltk
+from nltk.corpus import words, brown
+from nltk import bigrams
+from collections import defaultdict
+
+# Download required NLTK data
+try:
+    nltk.data.find('corpora/words')
+    nltk.data.find('corpora/brown')
+except LookupError:
+    nltk.download('words')
+    nltk.download('brown')
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
 # Page config
 st.set_page_config(
@@ -132,8 +147,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+<<<<<<< HEAD
 import asl_utils
 
+=======
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 # Load model
 @st.cache_resource
 def load_model():
@@ -142,6 +160,46 @@ def load_model():
 
 model = load_model()
 
+<<<<<<< HEAD
+=======
+# Build language model
+@st.cache_resource
+def build_language_model():
+    english_words = set(w.lower() for w in words.words() if len(w) > 2)
+    brown_words = [w.lower() for w in brown.words()]
+    bigram_model = defaultdict(Counter)
+    
+    for w1, w2 in bigrams(brown_words):
+        if w1.isalpha() and w2.isalpha():
+            bigram_model[w1][w2] += 1
+    
+    return english_words, bigram_model
+
+english_words, bigram_model = build_language_model()
+
+def get_word_suggestions(partial_word, max_suggestions=5):
+    if not partial_word or len(partial_word) < 2:
+        return []
+    
+    partial_lower = partial_word.lower()
+    suggestions = [w for w in english_words if w.startswith(partial_lower)]
+    suggestions.sort(key=lambda x: (len(x), x))
+    
+    return suggestions[:max_suggestions]
+
+def get_next_word_suggestions(last_word, max_suggestions=3):
+    if not last_word:
+        return []
+    
+    last_word_lower = last_word.lower()
+    
+    if last_word_lower in bigram_model:
+        next_words = bigram_model[last_word_lower].most_common(max_suggestions)
+        return [word for word, _ in next_words]
+    
+    return []
+
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 # MediaPipe setup
 BaseOptions = python.BaseOptions
 HandLandmarker = vision.HandLandmarker
@@ -173,7 +231,11 @@ st.markdown("<h1>🤟 Real-Time Sign Language Translator</h1>", unsafe_allow_htm
 st.markdown("---")
 
 # Layout
+<<<<<<< HEAD
 col1, col2, col3 = st.columns([3, 2, 2])
+=======
+col1, col2 = st.columns([2, 1])
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
 with col1:
     st.subheader("📹 Live Camera Feed")
@@ -212,7 +274,11 @@ with col2:
     
     if ends_with_space and words_in_sentence:
         previous_word = words_in_sentence[-1]
+<<<<<<< HEAD
         next_suggestions = asl_utils.get_next_word_suggestions(previous_word)
+=======
+        next_suggestions = get_next_word_suggestions(previous_word)
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
         
         if next_suggestions:
             st.markdown("**Next word:**")
@@ -225,7 +291,11 @@ with col2:
     
     elif words_in_sentence and not ends_with_space:
         current_word = words_in_sentence[-1]
+<<<<<<< HEAD
         word_sugs = asl_utils.get_word_suggestions(current_word)
+=======
+        word_sugs = get_word_suggestions(current_word)
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
         
         if word_sugs:
             st.markdown("**Complete word:**")
@@ -273,6 +343,7 @@ with col2:
             else:
                 st.warning("⚠️ Nothing to save!")
 
+<<<<<<< HEAD
 with col3:
     st.subheader("📚 ASL Reference")
     ref_image_placeholder = st.empty()
@@ -281,6 +352,8 @@ with col3:
     # Default state if no letter detected
     ref_text_placeholder.info("Start signing to see reference details.")
 
+=======
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 # Camera processing
 if run:
     cap = cv2.VideoCapture(0)
@@ -367,6 +440,7 @@ if run:
             
             if current_letter:
                 current_letter_display.markdown(f"**Current Letter:** `{current_letter}`")
+<<<<<<< HEAD
                 
                 # Update Reference Panel
                 img_url = asl_utils.get_asl_image_url(current_letter)
@@ -383,6 +457,10 @@ if run:
                 current_letter_display.markdown(f"**Current Letter:** _None_")
                 ref_image_placeholder.empty()
                 ref_text_placeholder.info("Waiting for sign...")
+=======
+            else:
+                current_letter_display.markdown(f"**Current Letter:** _None_")
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
             
             FRAME_WINDOW.image(frame_rgb, use_container_width=True)
             

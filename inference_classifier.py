@@ -4,7 +4,10 @@ import mediapipe as mp
 import pickle
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+<<<<<<< HEAD
 import asl_utils
+=======
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
 model_dict = pickle.load(open('./model.p', 'rb'))
 model = model_dict['model']
@@ -58,11 +61,14 @@ with HandLandmarker.create_from_options(options) as landmarker:
                 x1 = int(min(x_) * frame.shape[1])
                 y1 = int(min(y_) * frame.shape[0])
                 cv2.putText(frame, predicted_label, (x1, y1 - 10), cv2.FONT_HERSHEY_TRIPLEX, 1.3, (0, 255, 0), 3, cv2.LINE_AA)
+<<<<<<< HEAD
                 
                 # Get and display description validation
                 desc = asl_utils.get_asl_description(predicted_label)
                 # Printing to console for validation
                 print(f"Predicted: {predicted_label} | Ref: {desc}")
+=======
+>>>>>>> 2b44ce2aafff107afc2e8deacb9914bc0ff9bdba
 
         cv2.putText(frame, "Press 'Esc' to exit", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.imshow('Sign Language Recognition', frame)
