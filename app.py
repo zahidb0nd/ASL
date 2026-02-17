@@ -201,7 +201,7 @@ labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8
 
 # Session state
 if 'sentence' not in st.session_state:
-    st.session_state.sentence = ""
+    st.session_state.sentence = []
 if 'last_letter' not in st.session_state:
     st.session_state.last_letter = ""
 if 'last_letter_time' not in st.session_state:
@@ -237,21 +237,23 @@ with col2:
         st.rerun()
     
     # Sentence display
+    sentence_str = "".join(st.session_state.sentence)
     if st.session_state.edit_mode:
-        edited_text = st.text_area("✍️ Edit your text:", st.session_state.sentence, height=100, key="editor")
-        if edited_text != st.session_state.sentence:
-            st.session_state.sentence = edited_text
+        edited_text = st.text_area("✍️ Edit your text:", sentence_str, height=100, key="editor")
+        if edited_text != sentence_str:
+            st.session_state.sentence = list(edited_text)
+            sentence_str = edited_text
     else:
         sentence_display = st.empty()
-        sentence_display.markdown(f"### {st.session_state.sentence if st.session_state.sentence else '_Start signing..._'}")
+        sentence_display.markdown(f"### {sentence_str if sentence_str else '_Start signing..._'}")
     
     st.markdown("---")
     
     # Suggestions
     st.subheader("💡 Smart Suggestions")
     
-    words_in_sentence = st.session_state.sentence.strip().split()
-    ends_with_space = st.session_state.sentence.endswith(" ")
+    words_in_sentence = sentence_str.strip().split()
+    ends_with_space = sentence_str.endswith(" ")
     
     if ends_with_space and words_in_sentence:
         previous_word = words_in_sentence[-1]
@@ -261,7 +263,7 @@ with col2:
             st.markdown("**Next word:**")
             for idx, sug in enumerate(next_suggestions):
                 if st.button(f"➡️ {sug.upper()}", key=f"next_{sug}_{idx}"):
-                    st.session_state.sentence += sug.upper() + " "
+                    st.session_state.sentence.extend(sug.upper() + " ")
                     st.rerun()
         else:
             st.info("✨ Keep signing...")
@@ -275,7 +277,7 @@ with col2:
             for idx, sug in enumerate(word_sugs[:3]):
                 if st.button(f"📝 {sug.upper()}", key=f"word_{sug}_{idx}"):
                     completed = " ".join(words_in_sentence[:-1])
-                    st.session_state.sentence = (completed + " " if completed else "") + sug.upper() + " "
+                    st.session_state.sentence = list((completed + " " if completed else "") + sug.upper() + " ")
                     st.rerun()
         else:
             st.info("✨ Keep signing...")
@@ -291,26 +293,27 @@ with col2:
     
     with col_a:
         if st.button("➕ Space", use_container_width=True):
-            st.session_state.sentence += " "
+            st.session_state.sentence.append(" ")
             st.rerun()
     
     with col_b:
         if st.button("⬅️ Delete", use_container_width=True):
             if st.session_state.sentence:
-                st.session_state.sentence = st.session_state.sentence[:-1]
+                st.session_state.sentence.pop()
                 st.rerun()
     
     with col_c:
         if st.button("🗑️ Clear", use_container_width=True):
-            st.session_state.sentence = ""
+            st.session_state.sentence = []
             st.session_state.last_letter = ""
             st.rerun()
     
     with col_d:
         if st.button("💾 Save", use_container_width=True):
-            if st.session_state.sentence:
+            sentence_str = "".join(st.session_state.sentence)
+            if sentence_str:
                 with open("detected_text.txt", "w") as f:
-                    f.write(st.session_state.sentence)
+                    f.write(sentence_str)
                 st.success("✅ Saved!")
             else:
                 st.warning("⚠️ Nothing to save!")
@@ -381,10 +384,10 @@ if run:
                     if current_letter == st.session_state.last_letter:
                         if current_time - st.session_state.last_letter_time > 1.0:
                             if current_time > st.session_state.letter_cooldown:
-                                st.session_state.sentence += current_letter
+                                st.session_state.sentence.append(current_letter)
                                 st.session_state.letter_cooldown = current_time + 2.0
                                 if not st.session_state.edit_mode:
-                                    sentence_display.markdown(f"### {st.session_state.sentence}")
+                                    sentence_display.markdown(f"### {''.join(st.session_state.sentence)}")
                     else:
                         st.session_state.last_letter = current_letter
                         st.session_state.last_letter_time = current_time
