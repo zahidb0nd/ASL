@@ -5,13 +5,13 @@ import mediapipe as mp
 import pickle
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from PIL import Image
 import time
-from collections import Counter
-from collections import defaultdict
+from collections import Counter, defaultdict
 import nltk
 from nltk.corpus import words, brown
 from nltk import bigrams
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
+import av
 
 # Download required NLTK data
 try:
@@ -23,7 +23,7 @@ except LookupError:
 
 # Page config
 st.set_page_config(
-    page_title="Sign Language Translator", 
+    page_title="Sign Language Translator",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -31,12 +31,9 @@ st.set_page_config(
 # Custom CSS
 st.markdown("""
 <style>
-    /* Main background */
     .stApp {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     }
-    
-    /* Title styling */
     h1 {
         color: white !important;
         text-align: center;
@@ -45,22 +42,10 @@ st.markdown("""
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         margin-bottom: 0 !important;
     }
-    
-    /* Subheaders */
     h2, h3 {
         color: white !important;
         font-weight: 600 !important;
     }
-    
-    /* Card-like containers */
-    .stApp > div > div > div > div {
-        background: rgba(255, 255, 255, 0.95);
-        border-radius: 15px;
-        padding: 20px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
-    }
-    
-    /* Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -71,66 +56,25 @@ st.markdown("""
         transition: all 0.3s ease;
         box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }
-    
     .stButton > button:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(0,0,0,0.3);
     }
-    
-    /* Checkbox */
-    .stCheckbox {
-        background: white;
-        padding: 10px;
-        border-radius: 10px;
-    }
-    
-    /* Text area */
     .stTextArea > div > div > textarea {
         border-radius: 10px;
         border: 2px solid #667eea;
         font-size: 1.1rem;
     }
-    
-    /* Info boxes */
-    .stInfo {
-        background: rgba(102, 126, 234, 0.1);
-        border-left: 4px solid #667eea;
-        border-radius: 10px;
-    }
-    
-    /* Success/Warning */
-    .stSuccess {
-        background: rgba(0, 255, 0, 0.1);
-        border-left: 4px solid #00ff00;
-        border-radius: 10px;
-    }
-    
-    .stWarning {
-        background: rgba(255, 165, 0, 0.1);
-        border-left: 4px solid #ffa500;
-        border-radius: 10px;
-    }
-    
-    /* Markdown text */
-    .stMarkdown {
-        color: #2d3748;
-    }
-    
-    /* Camera feed border */
     img {
         border-radius: 15px;
         box-shadow: 0 8px 32px rgba(0,0,0,0.15);
     }
-    
-    /* Divider */
     hr {
         border: none;
         height: 2px;
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
         margin: 20px 0;
     }
-    
-    /* Current letter display */
     code {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white !important;
@@ -141,6 +85,23 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# Twilio TURN server config for mobile support
+def get_rtc_configuration():
+    try:
+        from twilio.rest import Client
+        account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
+        auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
+        client = Client(account_sid, auth_token)
+        token = client.tokens.create()
+        return RTCConfiguration({"iceServers": token.ice_servers})
+    except Exception:
+        # Fallback without Twilio
+        return RTCConfiguration({
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+            ]
+        })
 
 # Load model
 @st.cache_resource
@@ -156,11 +117,9 @@ def build_language_model():
     english_words = set(w.lower() for w in words.words() if len(w) > 2)
     brown_words = [w.lower() for w in brown.words()]
     bigram_model = defaultdict(Counter)
-    
     for w1, w2 in bigrams(brown_words):
         if w1.isalpha() and w2.isalpha():
             bigram_model[w1][w2] += 1
-    
     return english_words, bigram_model
 
 english_words, bigram_model = build_language_model()
@@ -168,26 +127,21 @@ english_words, bigram_model = build_language_model()
 def get_word_suggestions(partial_word, max_suggestions=5):
     if not partial_word or len(partial_word) < 2:
         return []
-    
     partial_lower = partial_word.lower()
     suggestions = [w for w in english_words if w.startswith(partial_lower)]
     suggestions.sort(key=lambda x: (len(x), x))
-    
     return suggestions[:max_suggestions]
 
 def get_next_word_suggestions(last_word, max_suggestions=3):
     if not last_word:
         return []
-    
     last_word_lower = last_word.lower()
-    
     if last_word_lower in bigram_model:
         next_words = bigram_model[last_word_lower].most_common(max_suggestions)
         return [word for word, _ in next_words]
-    
     return []
 
-# ASL reference descriptions (built-in, no external dependency)
+# ASL descriptions
 ASL_DESCRIPTIONS = {
     'A': 'Make a fist with your dominant hand, thumb resting on the side.',
     'B': 'Hold your fingers straight up and together, thumb tucked across palm.',
@@ -229,50 +183,143 @@ HandLandmarker = vision.HandLandmarker
 HandLandmarkerOptions = vision.HandLandmarkerOptions
 VisionRunningMode = vision.RunningMode
 
-options = HandLandmarkerOptions(
-    base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
-    running_mode=VisionRunningMode.IMAGE)
+labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H',
+               8: 'I', 9: 'J', 10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P',
+               16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W',
+               23: 'X', 24: 'Y', 25: 'Z'}
 
-labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I', 9: 'J', 10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P', 16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W', 23: 'X', 24: 'Y', 25: 'Z'}
+# Session state defaults
+for key, default in [
+    ('sentence', []),
+    ('last_letter', ""),
+    ('last_letter_time', 0),
+    ('prediction_buffer', []),
+    ('letter_cooldown', 0),
+    ('edit_mode', False),
+    ('current_letter', ""),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
-# Session state
-if 'sentence' not in st.session_state:
-    st.session_state.sentence = []
-if 'last_letter' not in st.session_state:
-    st.session_state.last_letter = ""
-if 'last_letter_time' not in st.session_state:
-    st.session_state.last_letter_time = 0
-if 'prediction_buffer' not in st.session_state:
-    st.session_state.prediction_buffer = []
-if 'letter_cooldown' not in st.session_state:
-    st.session_state.letter_cooldown = 0
-if 'edit_mode' not in st.session_state:
-    st.session_state.edit_mode = False
+# Video processor for webrtc
+class SignLanguageProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.model = load_model()
+        self.options = HandLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
+            running_mode=VisionRunningMode.IMAGE
+        )
+        self.prediction_buffer = []
+        self.last_letter = ""
+        self.last_letter_time = 0
+        self.letter_cooldown = 0
+        self.current_letter = ""
 
-# Title
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        with HandLandmarker.create_from_options(self.options) as landmarker:
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            results = landmarker.detect(mp_image)
+
+        current_time = time.time()
+        current_letter = ""
+
+        if results.hand_landmarks:
+            for hand_landmarks in results.hand_landmarks:
+                HAND_CONNECTIONS = [
+                    (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
+                    (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
+                    (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
+                ]
+
+                landmark_points = []
+                for landmark in hand_landmarks:
+                    x = int(landmark.x * img.shape[1])
+                    y = int(landmark.y * img.shape[0])
+                    landmark_points.append((x, y))
+
+                for connection in HAND_CONNECTIONS:
+                    cv2.line(frame_rgb, landmark_points[connection[0]],
+                             landmark_points[connection[1]], (102, 126, 234), 3)
+
+                for point in landmark_points:
+                    cv2.circle(frame_rgb, point, 6, (118, 75, 162), -1)
+
+                x_, y_, data_hands = [], [], []
+                for landmark in hand_landmarks:
+                    x_.append(landmark.x)
+                    y_.append(landmark.y)
+                for landmark in hand_landmarks:
+                    data_hands.append(landmark.x - min(x_))
+                    data_hands.append(landmark.y - min(y_))
+
+                prediction = self.model.predict([np.asarray(data_hands)])
+                predicted_letter = labels_dict[int(prediction[0])]
+
+                self.prediction_buffer.append(predicted_letter)
+                if len(self.prediction_buffer) > 10:
+                    self.prediction_buffer.pop(0)
+
+                if len(self.prediction_buffer) >= 5:
+                    current_letter = Counter(self.prediction_buffer).most_common(1)[0][0]
+                else:
+                    current_letter = predicted_letter
+
+                if current_letter == self.last_letter:
+                    if current_time - self.last_letter_time > 1.0:
+                        if current_time > self.letter_cooldown:
+                            st.session_state.sentence.append(current_letter)
+                            st.session_state.current_letter = current_letter
+                            self.letter_cooldown = current_time + 2.0
+                else:
+                    self.last_letter = current_letter
+                    self.last_letter_time = current_time
+
+                x1 = int(min(x_) * img.shape[1])
+                y1 = int(min(y_) * img.shape[0])
+                cv2.putText(frame_rgb, current_letter, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255, 255, 255), 4)
+                cv2.putText(frame_rgb, current_letter, (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102, 126, 234), 2)
+        else:
+            self.last_letter = ""
+
+        self.current_letter = current_letter
+        st.session_state.current_letter = current_letter
+
+        return av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+
+# ---- UI ----
 st.markdown("<h1>🤟 Real-Time Sign Language Translator</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Layout: 3 columns
 col1, col2, col3 = st.columns([3, 2, 2])
 
 with col1:
     st.subheader("📹 Live Camera Feed")
-    run = st.checkbox('🎥 Start Camera', key="camera_toggle")
-    FRAME_WINDOW = st.empty()
-    
+    st.info("📱 Works on both desktop and mobile!")
+    webrtc_streamer(
+        key="sign-language",
+        video_processor_factory=SignLanguageProcessor,
+        rtc_configuration=get_rtc_configuration(),
+        media_stream_constraints={"video": True, "audio": False},
+    )
+
 with col2:
     st.subheader("📝 Detected Sentence")
-    
-    # Current letter
-    current_letter_display = st.empty()
-    
-    # Edit button
+
+    current_letter = st.session_state.get("current_letter", "")
+    if current_letter:
+        st.markdown(f"**Current Letter:** `{current_letter}`")
+    else:
+        st.markdown("**Current Letter:** _None_")
+
     if st.button("✏️ Edit Text" if not st.session_state.edit_mode else "✅ Done Editing"):
         st.session_state.edit_mode = not st.session_state.edit_mode
         st.rerun()
-    
-    # Sentence display
+
     sentence_str = "".join(st.session_state.sentence)
     if st.session_state.edit_mode:
         edited_text = st.text_area("✍️ Edit your text:", sentence_str, height=100, key="editor")
@@ -280,21 +327,17 @@ with col2:
             st.session_state.sentence = list(edited_text)
             sentence_str = edited_text
     else:
-        sentence_display = st.empty()
-        sentence_display.markdown(f"### {sentence_str if sentence_str else '_Start signing..._'}")
-    
+        st.markdown(f"### {sentence_str if sentence_str else '_Start signing..._'}")
+
     st.markdown("---")
-    
-    # Suggestions
     st.subheader("💡 Smart Suggestions")
-    
+
     words_in_sentence = sentence_str.strip().split()
     ends_with_space = sentence_str.endswith(" ")
-    
+
     if ends_with_space and words_in_sentence:
         previous_word = words_in_sentence[-1]
         next_suggestions = get_next_word_suggestions(previous_word)
-        
         if next_suggestions:
             st.markdown("**Next word:**")
             for idx, sug in enumerate(next_suggestions):
@@ -303,11 +346,9 @@ with col2:
                     st.rerun()
         else:
             st.info("✨ Keep signing...")
-    
     elif words_in_sentence and not ends_with_space:
         current_word = words_in_sentence[-1]
         word_sugs = get_word_suggestions(current_word)
-        
         if word_sugs:
             st.markdown("**Complete word:**")
             for idx, sug in enumerate(word_sugs[:3]):
@@ -319,31 +360,26 @@ with col2:
             st.info("✨ Keep signing...")
     else:
         st.info("✨ Start signing to see suggestions")
-    
+
     st.markdown("---")
-    
-    # Controls
     st.subheader("🎮 Controls")
     col_a, col_b = st.columns(2)
     col_c, col_d = st.columns(2)
-    
+
     with col_a:
         if st.button("➕ Space", use_container_width=True):
             st.session_state.sentence.append(" ")
             st.rerun()
-    
     with col_b:
         if st.button("⬅️ Delete", use_container_width=True):
             if st.session_state.sentence:
                 st.session_state.sentence.pop()
                 st.rerun()
-    
     with col_c:
         if st.button("🗑️ Clear", use_container_width=True):
             st.session_state.sentence = []
             st.session_state.last_letter = ""
             st.rerun()
-    
     with col_d:
         if st.button("💾 Save", use_container_width=True):
             sentence_str = "".join(st.session_state.sentence)
@@ -356,107 +392,10 @@ with col2:
 
 with col3:
     st.subheader("📚 ASL Reference")
-    ref_image_placeholder = st.empty()
-    ref_text_placeholder = st.empty()
-    ref_text_placeholder.info("Start signing to see reference details.")
-
-# Camera processing
-if run:
-    cap = cv2.VideoCapture(0)
-    
-    with HandLandmarker.create_from_options(options) as landmarker:
-        while run:
-            ret, frame = cap.read()
-            if not ret:
-                st.error("❌ Camera access failed")
-                break
-                
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-            results = landmarker.detect(mp_image)
-            
-            current_letter = ""
-            current_time = time.time()
-            
-            if results.hand_landmarks:
-                for hand_landmarks in results.hand_landmarks:
-                    HAND_CONNECTIONS = [
-                        (0, 1), (1, 2), (2, 3), (3, 4),
-                        (0, 5), (5, 6), (6, 7), (7, 8),
-                        (0, 9), (9, 10), (10, 11), (11, 12),
-                        (0, 13), (13, 14), (14, 15), (15, 16),
-                        (0, 17), (17, 18), (18, 19), (19, 20),
-                        (5, 9), (9, 13), (13, 17)
-                    ]
-
-                    landmark_points = []
-                    for landmark in hand_landmarks:
-                        x = int(landmark.x * frame.shape[1])
-                        y = int(landmark.y * frame.shape[0])
-                        landmark_points.append((x, y))
-
-                    for connection in HAND_CONNECTIONS:
-                        cv2.line(frame_rgb, landmark_points[connection[0]], landmark_points[connection[1]], (102, 126, 234), 3)
-
-                    for point in landmark_points:
-                        cv2.circle(frame_rgb, point, 6, (118, 75, 162), -1)
-                    
-                    x_, y_, data_hands = [], [], []
-                    for landmark in hand_landmarks:
-                        x_.append(landmark.x)
-                        y_.append(landmark.y)
-                    
-                    for landmark in hand_landmarks:
-                        data_hands.append(landmark.x - min(x_))
-                        data_hands.append(landmark.y - min(y_))
-                    
-                    prediction = model.predict([np.asarray(data_hands)])
-                    predicted_letter = labels_dict[int(prediction[0])]
-
-                    st.session_state.prediction_buffer.append(predicted_letter)
-                    if len(st.session_state.prediction_buffer) > 10:
-                        st.session_state.prediction_buffer.pop(0)
-
-                    if len(st.session_state.prediction_buffer) >= 5:
-                        most_common = Counter(st.session_state.prediction_buffer).most_common(1)[0][0]
-                        current_letter = most_common
-                    else:
-                        current_letter = predicted_letter
-                    
-                    if current_letter == st.session_state.last_letter:
-                        if current_time - st.session_state.last_letter_time > 1.0:
-                            if current_time > st.session_state.letter_cooldown:
-                                st.session_state.sentence.append(current_letter)
-                                st.session_state.letter_cooldown = current_time + 2.0
-                                if not st.session_state.edit_mode:
-                                    sentence_display.markdown(f"### {''.join(st.session_state.sentence)}")
-                    else:
-                        st.session_state.last_letter = current_letter
-                        st.session_state.last_letter_time = current_time
-                    
-                    x1 = int(min(x_) * frame.shape[1])
-                    y1 = int(min(y_) * frame.shape[0])
-                    cv2.putText(frame_rgb, current_letter, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255, 255, 255), 4)
-                    cv2.putText(frame_rgb, current_letter, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102, 126, 234), 2)
-            else:
-                if current_time > st.session_state.letter_cooldown:
-                    st.session_state.last_letter = ""
-            
-            if current_letter:
-                current_letter_display.markdown(f"**Current Letter:** `{current_letter}`")
-
-                # Update ASL Reference Panel
-                desc = get_asl_description(current_letter)
-                img_url = get_asl_image_url(current_letter)
-                ref_image_placeholder.image(img_url, caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
-                ref_text_placeholder.markdown(f"**Description:**\n\n{desc}")
-            else:
-                current_letter_display.markdown(f"**Current Letter:** _None_")
-                ref_image_placeholder.empty()
-                ref_text_placeholder.info("Waiting for sign...")
-            
-            FRAME_WINDOW.image(frame_rgb, use_container_width=True)
-            
-    cap.release()
+    if current_letter:
+        desc = get_asl_description(current_letter)
+        img_url = get_asl_image_url(current_letter)
+        st.image(img_url, caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
+        st.markdown(f"**Description:**\n\n{desc}")
+    else:
+        st.info("Start signing to see reference details.")
