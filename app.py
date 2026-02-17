@@ -12,6 +12,7 @@ from nltk.corpus import words, brown
 from nltk import bigrams
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
+import threading
 
 # Download required NLTK data
 try:
@@ -28,65 +29,39 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS
 st.markdown("""
 <style>
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
+    .stApp { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
     h1 {
-        color: white !important;
-        text-align: center;
-        font-size: 3rem !important;
-        font-weight: 700 !important;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        margin-bottom: 0 !important;
+        color: white !important; text-align: center;
+        font-size: 3rem !important; font-weight: 700 !important;
+        text-shadow: 2px 2px 4px rgba(0,0,0,0.3); margin-bottom: 0 !important;
     }
-    h2, h3 {
-        color: white !important;
-        font-weight: 600 !important;
-    }
+    h2, h3 { color: white !important; font-weight: 600 !important; }
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 10px;
-        padding: 10px 20px;
-        font-weight: 600;
-        transition: all 0.3s ease;
+        color: white; border: none; border-radius: 10px;
+        padding: 10px 20px; font-weight: 600;
         box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.3);
-    }
     .stTextArea > div > div > textarea {
-        border-radius: 10px;
-        border: 2px solid #667eea;
-        font-size: 1.1rem;
+        border-radius: 10px; border: 2px solid #667eea; font-size: 1.1rem;
     }
-    img {
-        border-radius: 15px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.15);
-    }
+    img { border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
     hr {
-        border: none;
-        height: 2px;
+        border: none; height: 2px;
         background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent);
         margin: 20px 0;
     }
     code {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white !important;
-        padding: 5px 15px;
-        border-radius: 8px;
-        font-size: 1.5rem;
-        font-weight: bold;
+        color: white !important; padding: 5px 15px;
+        border-radius: 8px; font-size: 1.5rem; font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# RTC config (no Twilio)
+# RTC config
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
 })
@@ -129,7 +104,6 @@ def get_next_word_suggestions(last_word, max_suggestions=3):
         return [word for word, _ in next_words]
     return []
 
-# ASL descriptions
 ASL_DESCRIPTIONS = {
     'A': 'Make a fist with your dominant hand, thumb resting on the side.',
     'B': 'Hold your fingers straight up and together, thumb tucked across palm.',
@@ -165,11 +139,10 @@ def get_asl_description(letter):
 def get_asl_image_url(letter):
     return f"https://www.handspeak.com/word/search/img/asl-alphabet/{letter.lower()}.jpg"
 
-# MediaPipe labels
-labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H',
-               8: 'I', 9: 'J', 10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P',
-               16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W',
-               23: 'X', 24: 'Y', 25: 'Z'}
+labels_dict = {0:'A',1:'B',2:'C',3:'D',4:'E',5:'F',6:'G',7:'H',
+               8:'I',9:'J',10:'K',11:'L',12:'M',13:'N',14:'O',15:'P',
+               16:'Q',17:'R',18:'S',19:'T',20:'U',21:'V',22:'W',
+               23:'X',24:'Y',25:'Z'}
 
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
@@ -177,7 +150,7 @@ HAND_CONNECTIONS = [
     (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
 ]
 
-# Session state defaults
+# Session state
 for key, default in [
     ('sentence', []),
     ('last_letter', ""),
@@ -192,104 +165,136 @@ for key, default in [
 
 
 class SignLanguageProcessor(VideoProcessorBase):
+    """
+    ✅ KEY FIX: Camera stream is NEVER blocked.
+    MediaPipe runs in a SEPARATE background thread.
+    recv() just draws the latest result overlay on each frame instantly.
+    """
     def __init__(self):
         self.model = load_model()
+        self.lock = threading.Lock()
 
-        # ✅ Create HandLandmarker ONCE here, not every frame
-        BaseOptions = python.BaseOptions
-        HandLandmarkerOptions = vision.HandLandmarkerOptions
-        VisionRunningMode = vision.RunningMode
-
-        options = HandLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
-            running_mode=VisionRunningMode.IMAGE
-        )
-        self.landmarker = vision.HandLandmarker.create_from_options(options)
-
+        # Latest frame for background thread to process
+        self.latest_frame = None
+        self.latest_result_overlay = None
+        self.current_letter = ""
         self.prediction_buffer = []
         self.last_letter = ""
         self.last_letter_time = 0
         self.letter_cooldown = 0
-        self.current_letter = ""
-        self.frame_count = 0
+
+        # Create MediaPipe landmarker once
+        options = vision.HandLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path='hand_landmarker.task'),
+            running_mode=vision.RunningMode.IMAGE
+        )
+        self.landmarker = vision.HandLandmarker.create_from_options(options)
+
+        # Start background processing thread
+        self.running = True
+        self.thread = threading.Thread(target=self._process_loop, daemon=True)
+        self.thread.start()
+
+    def _process_loop(self):
+        """Background thread: runs MediaPipe without blocking the camera."""
+        while self.running:
+            with self.lock:
+                frame = self.latest_frame
+
+            if frame is None:
+                time.sleep(0.05)
+                continue
+
+            try:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                results = self.landmarker.detect(mp_image)
+
+                overlay = frame_rgb.copy()
+                current_time = time.time()
+                current_letter = ""
+
+                if results.hand_landmarks:
+                    for hand_landmarks in results.hand_landmarks:
+                        landmark_points = []
+                        for lm in hand_landmarks:
+                            x = int(lm.x * frame.shape[1])
+                            y = int(lm.y * frame.shape[0])
+                            landmark_points.append((x, y))
+
+                        for conn in HAND_CONNECTIONS:
+                            cv2.line(overlay, landmark_points[conn[0]],
+                                     landmark_points[conn[1]], (102, 126, 234), 3)
+                        for pt in landmark_points:
+                            cv2.circle(overlay, pt, 6, (118, 75, 162), -1)
+
+                        x_, y_, data_hands = [], [], []
+                        for lm in hand_landmarks:
+                            x_.append(lm.x)
+                            y_.append(lm.y)
+                        for lm in hand_landmarks:
+                            data_hands.append(lm.x - min(x_))
+                            data_hands.append(lm.y - min(y_))
+
+                        pred = self.model.predict([np.asarray(data_hands)])
+                        predicted_letter = labels_dict[int(pred[0])]
+
+                        self.prediction_buffer.append(predicted_letter)
+                        if len(self.prediction_buffer) > 10:
+                            self.prediction_buffer.pop(0)
+
+                        current_letter = Counter(self.prediction_buffer).most_common(1)[0][0] \
+                            if len(self.prediction_buffer) >= 5 else predicted_letter
+
+                        if current_letter == self.last_letter:
+                            if current_time - self.last_letter_time > 1.0:
+                                if current_time > self.letter_cooldown:
+                                    st.session_state.sentence.append(current_letter)
+                                    st.session_state.current_letter = current_letter
+                                    self.letter_cooldown = current_time + 2.0
+                        else:
+                            self.last_letter = current_letter
+                            self.last_letter_time = current_time
+
+                        x1 = int(min(x_) * frame.shape[1])
+                        y1 = int(min(y_) * frame.shape[0])
+                        cv2.putText(overlay, current_letter, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255,255,255), 4)
+                        cv2.putText(overlay, current_letter, (x1, y1 - 10),
+                                    cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102,126,234), 2)
+                else:
+                    self.last_letter = ""
+
+                with self.lock:
+                    self.latest_result_overlay = overlay
+                    self.current_letter = current_letter
+                    st.session_state.current_letter = current_letter
+
+            except Exception:
+                pass
+
+            # Process ~10 times per second (plenty for sign detection)
+            time.sleep(0.1)
 
     def recv(self, frame):
+        """✅ This runs at full camera FPS - never blocked."""
         img = frame.to_ndarray(format="bgr24")
 
-        # ✅ Only process every 3rd frame to reduce CPU load
-        self.frame_count += 1
-        if self.frame_count % 3 != 0:
+        # Store latest frame for background thread
+        with self.lock:
+            self.latest_frame = img.copy()
+            overlay = self.latest_result_overlay
+
+        # Show processed overlay if available, else show raw frame
+        if overlay is not None:
+            return av.VideoFrame.from_ndarray(overlay, format="rgb24")
+        else:
             return av.VideoFrame.from_ndarray(
                 cv2.cvtColor(img, cv2.COLOR_BGR2RGB), format="rgb24"
             )
 
-        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-
-        # ✅ Reuse the same landmarker instance
-        results = self.landmarker.detect(mp_image)
-
-        current_time = time.time()
-        current_letter = ""
-
-        if results.hand_landmarks:
-            for hand_landmarks in results.hand_landmarks:
-                landmark_points = []
-                for landmark in hand_landmarks:
-                    x = int(landmark.x * img.shape[1])
-                    y = int(landmark.y * img.shape[0])
-                    landmark_points.append((x, y))
-
-                for connection in HAND_CONNECTIONS:
-                    cv2.line(frame_rgb,
-                             landmark_points[connection[0]],
-                             landmark_points[connection[1]],
-                             (102, 126, 234), 3)
-
-                for point in landmark_points:
-                    cv2.circle(frame_rgb, point, 6, (118, 75, 162), -1)
-
-                x_, y_, data_hands = [], [], []
-                for landmark in hand_landmarks:
-                    x_.append(landmark.x)
-                    y_.append(landmark.y)
-                for landmark in hand_landmarks:
-                    data_hands.append(landmark.x - min(x_))
-                    data_hands.append(landmark.y - min(y_))
-
-                prediction = self.model.predict([np.asarray(data_hands)])
-                predicted_letter = labels_dict[int(prediction[0])]
-
-                self.prediction_buffer.append(predicted_letter)
-                if len(self.prediction_buffer) > 10:
-                    self.prediction_buffer.pop(0)
-
-                current_letter = Counter(self.prediction_buffer).most_common(1)[0][0] \
-                    if len(self.prediction_buffer) >= 5 else predicted_letter
-
-                if current_letter == self.last_letter:
-                    if current_time - self.last_letter_time > 1.0:
-                        if current_time > self.letter_cooldown:
-                            st.session_state.sentence.append(current_letter)
-                            st.session_state.current_letter = current_letter
-                            self.letter_cooldown = current_time + 2.0
-                else:
-                    self.last_letter = current_letter
-                    self.last_letter_time = current_time
-
-                x1 = int(min(x_) * img.shape[1])
-                y1 = int(min(y_) * img.shape[0])
-                cv2.putText(frame_rgb, current_letter, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255, 255, 255), 4)
-                cv2.putText(frame_rgb, current_letter, (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102, 126, 234), 2)
-        else:
-            self.last_letter = ""
-
-        self.current_letter = current_letter
-        st.session_state.current_letter = current_letter
-
-        return av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+    def __del__(self):
+        self.running = False
 
 
 # ---- UI ----
