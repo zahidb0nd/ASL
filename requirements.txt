@@ -1,9 +1,8 @@
 streamlit
 opencv-python-headless
 mediapipe
-scikit-learn
 numpy
 nltk
 Pillow
 streamlit-webrtc
-av
+tensorflow-cpu
