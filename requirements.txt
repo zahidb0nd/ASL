@@ -5,3 +5,5 @@ scikit-learn
 numpy
 nltk
 Pillow
+streamlit-webrtc
+twilio
