@@ -6,21 +6,12 @@ import json
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import time
-from collections import Counter, defaultdict
-import nltk
-from nltk.corpus import words, brown
-from nltk import bigrams
+from collections import Counter
+import asl_utils
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 import av
 from tensorflow import keras
-
-# Download required NLTK data
-try:
-    nltk.data.find('corpora/words')
-    nltk.data.find('corpora/brown')
-except LookupError:
-    nltk.download('words')
-    nltk.download('brown')
+import queue
 
 st.set_page_config(page_title="Sign Language Translator", layout="wide", initial_sidebar_state="collapsed")
 
@@ -59,70 +50,6 @@ def load_tf_model():
 
 model, labels_dict = load_tf_model()
 
-@st.cache_resource
-def build_language_model():
-    english_words = set(w.lower() for w in words.words() if len(w) > 2)
-    brown_words = [w.lower() for w in brown.words()]
-    bigram_model = defaultdict(Counter)
-    for w1, w2 in bigrams(brown_words):
-        if w1.isalpha() and w2.isalpha():
-            bigram_model[w1][w2] += 1
-    return english_words, bigram_model
-
-english_words, bigram_model = build_language_model()
-
-def get_word_suggestions(partial_word, max_suggestions=5):
-    if not partial_word or len(partial_word) < 2:
-        return []
-    partial_lower = partial_word.lower()
-    suggestions = [w for w in english_words if w.startswith(partial_lower)]
-    suggestions.sort(key=lambda x: (len(x), x))
-    return suggestions[:max_suggestions]
-
-def get_next_word_suggestions(last_word, max_suggestions=3):
-    if not last_word:
-        return []
-    last_word_lower = last_word.lower()
-    if last_word_lower in bigram_model:
-        next_words = bigram_model[last_word_lower].most_common(max_suggestions)
-        return [word for word, _ in next_words]
-    return []
-
-ASL_DESCRIPTIONS = {
-    'A': 'Make a fist with your dominant hand, thumb resting on the side.',
-    'B': 'Hold your fingers straight up and together, thumb tucked across palm.',
-    'C': 'Curve your fingers and thumb into a C shape.',
-    'D': 'Point index finger up, remaining fingers touch thumb forming a circle.',
-    'E': 'Curl all fingers down, thumb tucked under fingers.',
-    'F': 'Connect index finger and thumb in a circle, other fingers extended.',
-    'G': 'Point index finger sideways, thumb parallel pointing out.',
-    'H': 'Point index and middle fingers sideways together.',
-    'I': 'Raise pinky finger, other fingers curled into fist.',
-    'J': 'Raise pinky and draw a J shape in the air.',
-    'K': 'Index and middle fingers up in a V, thumb between them.',
-    'L': 'Make an L shape with index finger up and thumb out.',
-    'M': 'Tuck three fingers over thumb.',
-    'N': 'Tuck two fingers over thumb.',
-    'O': 'Curve all fingers to meet thumb, forming an O shape.',
-    'P': 'Like K but pointed downward.',
-    'Q': 'Like G but pointed downward.',
-    'R': 'Cross middle finger over index finger.',
-    'S': 'Make a fist with thumb over fingers.',
-    'T': 'Make a fist with thumb between index and middle fingers.',
-    'U': 'Hold index and middle fingers straight up together.',
-    'V': 'Hold index and middle fingers up in a V (peace sign).',
-    'W': 'Hold index, middle, and ring fingers up spread apart.',
-    'X': 'Hook index finger into a curved/bent position.',
-    'Y': 'Extend thumb and pinky, curl other fingers (hang loose).',
-    'Z': 'Draw a Z in the air with your index finger.',
-}
-
-def get_asl_description(letter):
-    return ASL_DESCRIPTIONS.get(letter.upper(), "No description available.")
-
-def get_asl_image_url(letter):
-    return f"https://www.handspeak.com/word/search/img/asl-alphabet/{letter.lower()}.jpg"
-
 HAND_CONNECTIONS = [
     (0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),
     (0,9),(9,10),(10,11),(11,12),(0,13),(13,14),(14,15),(15,16),
@@ -154,6 +81,8 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.last_letter_time = 0
         self.letter_cooldown = 0
         self.frame_count = 0
+        self.letter_queue = queue.Queue()
+        self.detected_letter = ""
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -214,8 +143,7 @@ class SignLanguageProcessor(VideoProcessorBase):
                     if current_letter == self.last_letter:
                         if current_time - self.last_letter_time > 1.0:
                             if current_time > self.letter_cooldown:
-                                st.session_state.sentence.append(current_letter)
-                                st.session_state.current_letter = current_letter
+                                self.letter_queue.put(current_letter)
                                 self.letter_cooldown = current_time + 2.0
                     else:
                         self.last_letter = current_letter
@@ -228,7 +156,7 @@ class SignLanguageProcessor(VideoProcessorBase):
         else:
             self.last_letter = ""
         
-        st.session_state.current_letter = current_letter
+        self.detected_letter = current_letter
         return av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
 
 
@@ -240,7 +168,7 @@ col1, col2, col3 = st.columns([3, 2, 2])
 with col1:
     st.subheader("📹 Live Camera Feed")
     st.success("📱 Works on mobile and desktop!")
-    webrtc_streamer(
+    ctx = webrtc_streamer(
         key="sign-language",
         video_processor_factory=SignLanguageProcessor,
         rtc_configuration=RTC_CONFIGURATION,
@@ -248,7 +176,20 @@ with col1:
         async_processing=True,
     )
 
-with col2:
+@st.fragment(run_every=0.5)
+def poll_and_update_ui():
+    if ctx.video_processor:
+        # Check for new committed letters
+        try:
+            while True:
+                letter = ctx.video_processor.letter_queue.get_nowait()
+                st.session_state.sentence.append(letter)
+        except queue.Empty:
+            pass
+
+        # Update current letter for display
+        st.session_state.current_letter = ctx.video_processor.detected_letter
+
     st.subheader("📝 Detected Sentence")
     
     current_letter = st.session_state.get("current_letter", "")
@@ -257,7 +198,7 @@ with col2:
     else:
         st.markdown("**Current Letter:** _None_")
     
-    if st.button("✏️ Edit Text" if not st.session_state.edit_mode else "✅ Done Editing"):
+    if st.button("✏️ Edit Text" if not st.session_state.edit_mode else "✅ Done Editing", key="edit_btn"):
         st.session_state.edit_mode = not st.session_state.edit_mode
         st.rerun()
     
@@ -276,7 +217,7 @@ with col2:
     ends_with_space = sentence_str.endswith(" ")
     
     if ends_with_space and words_in_sentence:
-        next_suggestions = get_next_word_suggestions(words_in_sentence[-1])
+        next_suggestions = asl_utils.get_next_word_suggestions(words_in_sentence[-1])
         if next_suggestions:
             st.markdown("**Next word:**")
             for idx, sug in enumerate(next_suggestions):
@@ -286,7 +227,7 @@ with col2:
         else:
             st.info("✨ Keep signing...")
     elif words_in_sentence and not ends_with_space:
-        word_sugs = get_word_suggestions(words_in_sentence[-1])
+        word_sugs = asl_utils.get_word_suggestions(words_in_sentence[-1])
         if word_sugs:
             st.markdown("**Complete word:**")
             for idx, sug in enumerate(word_sugs[:3]):
@@ -304,30 +245,39 @@ with col2:
     col_a, col_b, col_c, col_d = st.columns(4)
     
     with col_a:
-        if st.button("➕", use_container_width=True):
+        if st.button("➕", use_container_width=True, key="space_btn"):
             st.session_state.sentence.append(" ")
             st.rerun()
     with col_b:
-        if st.button("⬅️", use_container_width=True):
+        if st.button("⬅️", use_container_width=True, key="back_btn"):
             if st.session_state.sentence:
                 st.session_state.sentence.pop()
                 st.rerun()
     with col_c:
-        if st.button("🗑️", use_container_width=True):
+        if st.button("🗑️", use_container_width=True, key="clear_btn"):
             st.session_state.sentence = []
             st.rerun()
     with col_d:
-        if st.button("💾", use_container_width=True):
+        if st.button("💾", use_container_width=True, key="save_btn"):
             if sentence_str:
                 st.success("✅ Saved!")
             else:
                 st.warning("⚠️ Nothing!")
 
+with col2:
+    poll_and_update_ui()
+
 with col3:
     st.subheader("📚 ASL Reference")
-    if current_letter:
-        st.image(get_asl_image_url(current_letter), 
-                caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
-        st.markdown(f"**Description:**\n\n{get_asl_description(current_letter)}")
-    else:
-        st.info("Start signing to see reference details.")
+
+    @st.fragment(run_every=0.5)
+    def reference_view():
+        current_letter = st.session_state.get("current_letter", "")
+        if current_letter:
+            st.image(asl_utils.get_asl_image_url(current_letter),
+                    caption=f"ASL Sign for '{current_letter}'", use_container_width=True)
+            st.markdown(f"**Description:**\n\n{asl_utils.get_asl_description(current_letter)}")
+        else:
+            st.info("Start signing to see reference details.")
+
+    reference_view()
