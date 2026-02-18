@@ -14,6 +14,13 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 import av
 from tensorflow import keras
 
+# Fix for "missing ScriptRunContext" warning in threads
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except ImportError:
+    # Fallback for older Streamlit versions
+    from streamlit.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
 # Download required NLTK data
 try:
     nltk.data.find('corpora/words')
@@ -143,6 +150,9 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.model = load_tf_model()[0]
         self.labels_dict = load_tf_model()[1]
         
+        # Capture the main script run context to pass to the worker thread
+        self.ctx = get_script_run_ctx()
+
         options = vision.HandLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=vision.RunningMode.IMAGE
@@ -156,6 +166,10 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.frame_count = 0
 
     def recv(self, frame):
+        # Attach the script run context to this thread if it's missing
+        if self.ctx:
+            add_script_run_ctx(self.ctx)
+
         img = frame.to_ndarray(format="bgr24")
         
         # Only process every 2 frames
