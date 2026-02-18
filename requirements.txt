@@ -5,3 +5,5 @@ numpy
 nltk
 Pillow
 tensorflow
+streamlit-webrtc
+av
