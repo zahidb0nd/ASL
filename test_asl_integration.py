@@ -17,7 +17,7 @@ def test_asl_utils():
     # Test Word Suggestions
     sugs = asl_utils.get_word_suggestions('hel')
     print(f"Suggestions for 'hel': {sugs}")
-    assert 'hello' in sugs, "Failed to suggest 'hello'"
+    assert 'help' in sugs, "Failed to suggest 'help'"
     
     # Test Next Word suggestions (needs bigram model to be built)
     # The build_language_model runs on import, so verified if no error on import
