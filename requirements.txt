@@ -4,5 +4,4 @@ mediapipe
 numpy
 nltk
 Pillow
-streamlit-webrtc
-tensorflow-cpu
+tensorflow

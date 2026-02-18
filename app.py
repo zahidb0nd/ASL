@@ -2,7 +2,7 @@ import streamlit as st
 import cv2
 import numpy as np
 import mediapipe as mp
-import pickle
+import json
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import time
@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 import nltk
 from nltk.corpus import words, brown
 from nltk import bigrams
+from tensorflow import keras
 
 # Download required NLTK data
 try:
@@ -84,13 +85,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Load model
+# Load TensorFlow model
 @st.cache_resource
-def load_model():
-    model_dict = pickle.load(open('./model.p', 'rb'))
-    return model_dict['model']
+def load_tf_model():
+    model = keras.models.load_model('./asl_model.h5')
+    with open('./class_indices.json', 'r') as f:
+        class_indices = json.load(f)
+    # Reverse mapping: index -> label
+    labels_dict = {v: k for k, v in class_indices.items()}
+    return model, labels_dict
 
-model = load_model()
+model, labels_dict = load_tf_model()
 
 # Build language model
 @st.cache_resource
@@ -167,8 +172,6 @@ VisionRunningMode = vision.RunningMode
 options = HandLandmarkerOptions(
     base_options=BaseOptions(model_asset_path='hand_landmarker.task'),
     running_mode=VisionRunningMode.IMAGE)
-
-labels_dict = {0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I', 9: 'J', 10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P', 16: 'Q', 17: 'R', 18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W', 23: 'X', 24: 'Y', 25: 'Z'}
 
 # Session state
 if 'sentence' not in st.session_state:
@@ -291,7 +294,7 @@ with col3:
     ref_text_placeholder = st.empty()
     ref_text_placeholder.info("Start signing to see reference details.")
 
-# Camera processing
+# Camera processing with TensorFlow model
 if run:
     cap = cv2.VideoCapture(0)
     
@@ -332,45 +335,53 @@ if run:
                     for point in landmark_points:
                         cv2.circle(frame_rgb, point, 6, (118, 75, 162), -1)
                     
-                    x_, y_, data_hands = [], [], []
-                    for landmark in hand_landmarks:
-                        x_.append(landmark.x)
-                        y_.append(landmark.y)
+                    # Extract hand region for CNN
+                    x_coords = [lm.x for lm in hand_landmarks]
+                    y_coords = [lm.y for lm in hand_landmarks]
                     
-                    for landmark in hand_landmarks:
-                        data_hands.append(landmark.x - min(x_))
-                        data_hands.append(landmark.y - min(y_))
+                    h, w = frame.shape[:2]
+                    x_min = max(0, int(min(x_coords) * w) - 20)
+                    x_max = min(w, int(max(x_coords) * w) + 20)
+                    y_min = max(0, int(min(y_coords) * h) - 20)
+                    y_max = min(h, int(max(y_coords) * h) + 20)
                     
-                    prediction = model.predict([np.asarray(data_hands)])
-                    predicted_letter = labels_dict[int(prediction[0])]
+                    hand_img = frame_rgb[y_min:y_max, x_min:x_max]
+                    
+                    if hand_img.size > 0:
+                        # Resize to 64x64 for CNN model
+                        hand_img_resized = cv2.resize(hand_img, (64, 64))
+                        hand_img_array = np.expand_dims(hand_img_resized / 255.0, axis=0)
+                        
+                        # Predict using TensorFlow model
+                        prediction = model.predict(hand_img_array, verbose=0)
+                        predicted_class = np.argmax(prediction[0])
+                        predicted_letter = labels_dict[predicted_class]
 
-                    st.session_state.prediction_buffer.append(predicted_letter)
-                    if len(st.session_state.prediction_buffer) > 10:
-                        st.session_state.prediction_buffer.pop(0)
+                        st.session_state.prediction_buffer.append(predicted_letter)
+                        if len(st.session_state.prediction_buffer) > 10:
+                            st.session_state.prediction_buffer.pop(0)
 
-                    if len(st.session_state.prediction_buffer) >= 5:
-                        most_common = Counter(st.session_state.prediction_buffer).most_common(1)[0][0]
-                        current_letter = most_common
-                    else:
-                        current_letter = predicted_letter
-                    
-                    if current_letter == st.session_state.last_letter:
-                        if current_time - st.session_state.last_letter_time > 1.0:
-                            if current_time > st.session_state.letter_cooldown:
-                                st.session_state.sentence.append(current_letter)
-                                st.session_state.letter_cooldown = current_time + 2.0
-                                if not st.session_state.edit_mode:
-                                    sentence_display.markdown(f"### {''.join(st.session_state.sentence)}")
-                    else:
-                        st.session_state.last_letter = current_letter
-                        st.session_state.last_letter_time = current_time
-                    
-                    x1 = int(min(x_) * frame.shape[1])
-                    y1 = int(min(y_) * frame.shape[0])
-                    cv2.putText(frame_rgb, current_letter, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255, 255, 255), 4)
-                    cv2.putText(frame_rgb, current_letter, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102, 126, 234), 2)
+                        if len(st.session_state.prediction_buffer) >= 5:
+                            most_common = Counter(st.session_state.prediction_buffer).most_common(1)[0][0]
+                            current_letter = most_common
+                        else:
+                            current_letter = predicted_letter
+                        
+                        if current_letter == st.session_state.last_letter:
+                            if current_time - st.session_state.last_letter_time > 1.0:
+                                if current_time > st.session_state.letter_cooldown:
+                                    st.session_state.sentence.append(current_letter)
+                                    st.session_state.letter_cooldown = current_time + 2.0
+                                    if not st.session_state.edit_mode:
+                                        sentence_display.markdown(f"### {''.join(st.session_state.sentence)}")
+                        else:
+                            st.session_state.last_letter = current_letter
+                            st.session_state.last_letter_time = current_time
+                        
+                        cv2.putText(frame_rgb, current_letter, (x_min, y_min - 10), 
+                                   cv2.FONT_HERSHEY_TRIPLEX, 2.5, (255, 255, 255), 4)
+                        cv2.putText(frame_rgb, current_letter, (x_min, y_min - 10), 
+                                   cv2.FONT_HERSHEY_TRIPLEX, 2.5, (102, 126, 234), 2)
             else:
                 if current_time > st.session_state.letter_cooldown:
                     st.session_state.last_letter = ""
@@ -378,7 +389,6 @@ if run:
             if current_letter:
                 current_letter_display.markdown(f"**Current Letter:** `{current_letter}`")
                 
-                # Update Reference Panel
                 img_url = get_asl_image_url(current_letter)
                 desc = get_asl_description(current_letter)
                 
