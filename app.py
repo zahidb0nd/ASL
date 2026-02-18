@@ -136,6 +136,12 @@ HAND_CONNECTIONS = [
     (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
 ]
 
+# Capture context at global level to ensure we get the main thread's context
+try:
+    MAIN_CTX = get_script_run_ctx()
+except Exception:
+    MAIN_CTX = None
+
 for key, default in [
     ('sentence', []), ('last_letter', ""), ('last_letter_time', 0),
     ('prediction_buffer', []), ('letter_cooldown', 0), ('edit_mode', False),
@@ -150,8 +156,8 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.model = load_tf_model()[0]
         self.labels_dict = load_tf_model()[1]
         
-        # Capture the main script run context to pass to the worker thread
-        self.ctx = get_script_run_ctx()
+        # Use the global main context
+        self.ctx = MAIN_CTX
 
         options = vision.HandLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path='hand_landmarker.task'),
