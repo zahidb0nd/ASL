@@ -12,6 +12,22 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfigurati
 import av
 from tensorflow import keras
 import queue
+import nltk
+
+# Fix for "missing ScriptRunContext" warning in threads
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except ImportError:
+    # Fallback for older Streamlit versions
+    from streamlit.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+# Download required NLTK data
+try:
+    nltk.data.find('corpora/words')
+    nltk.data.find('corpora/brown')
+except LookupError:
+    nltk.download('words')
+    nltk.download('brown')
 
 st.set_page_config(page_title="Sign Language Translator", layout="wide", initial_sidebar_state="collapsed")
 
@@ -56,6 +72,12 @@ HAND_CONNECTIONS = [
     (0,17),(17,18),(18,19),(19,20),(5,9),(9,13),(13,17)
 ]
 
+# Capture context at global level to ensure we get the main thread's context
+try:
+    MAIN_CTX = get_script_run_ctx()
+except Exception:
+    MAIN_CTX = None
+
 for key, default in [
     ('sentence', []), ('last_letter', ""), ('last_letter_time', 0),
     ('prediction_buffer', []), ('letter_cooldown', 0), ('edit_mode', False),
@@ -70,6 +92,9 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.model = load_tf_model()[0]
         self.labels_dict = load_tf_model()[1]
         
+        # Use the global main context
+        self.ctx = MAIN_CTX
+
         options = vision.HandLandmarkerOptions(
             base_options=python.BaseOptions(model_asset_path='hand_landmarker.task'),
             running_mode=vision.RunningMode.IMAGE
@@ -85,6 +110,10 @@ class SignLanguageProcessor(VideoProcessorBase):
         self.detected_letter = ""
 
     def recv(self, frame):
+        # Attach the script run context to this thread if it's missing
+        if self.ctx:
+            add_script_run_ctx(self.ctx)
+
         img = frame.to_ndarray(format="bgr24")
         
         # Only process every 2 frames
